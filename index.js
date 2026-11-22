@@ -19,9 +19,9 @@ function extractOTP(text) {
 
 function maskNumber(num) {
     if (!num) return 'Unknown';
-    const str = num.toString().replace('+', '');
+    const str = num.toString().replace('+', '').trim();
     if (str.length > 8) {
-        return str.substring(0, 4) + 'XXXX' + str.substring(str.length - 4);
+        return str.substring(0, 3) + 'XXXX' + str.substring(str.length - 5);
     }
     return str;
 }
@@ -66,8 +66,19 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).send('Bot is currently OFF.');
     }
 
-    const data = req.body;
-    console.log('Webhook Payload:', JSON.stringify(data));
+    const body = req.body || {};
+    console.log('Incoming Payload:', JSON.stringify(body));
+
+    // iprn.pro SMS Records ডেটা নেস্টেড data অবজেক্ট বা সরাসরি পেলোড থেকে নেওয়া
+    const record = body.data || body.record || body;
+
+    const rawNumber = record.b_number || record.to || record.recipient || record.number || record.msisdn || '';
+    const rawMessage = record.message || record.sms || record.text || record.content || record.body || '';
+
+    // ভেরিফিকেশন পিং বা খালি রেকর্ড বাদ দেওয়া
+    if (!rawNumber && !rawMessage) {
+        return res.status(200).send('OK');
+    }
 
     const currentDate = new Date().toDateString();
     if (lastDate !== currentDate) {
@@ -77,11 +88,9 @@ app.post('/webhook', async (req, res) => {
     todayCount++;
     lifetimeCount++;
 
-    const time = data.created_at || new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
-    const service = data.a_number || data.sender_id || data.service || 'Telegram';
-    const country = data.destination || data.country || 'China 🇨🇳';
-    const rawNumber = data.b_number || data.number || '';
-    const rawMessage = data.message || data.text || '';
+    const time = record.created_at || record.timestamp || record.date || new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
+    const service = record.a_number || record.from || record.sender_id || record.sender || record.service || 'Telegram';
+    const country = record.destination || record.country || record.range || 'China 🇨🇳';
 
     const maskedNum = maskNumber(rawNumber);
     const otpCode = extractOTP(rawMessage);
