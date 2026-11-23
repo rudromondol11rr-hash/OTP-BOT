@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 
 // ==========================================
-// কনফিগারেশন: এখানে আপনার আসল তথ্যগুলো বসান
+// কনফিগারেশন: এখানে আপনার আসল তথ্যগুলো বসা
 // ==========================================
 const BOT_TOKEN = '9100726768:AAFIPksNHSbJw6PluOebpFN3nJpUOruUKJA';   // BotFather থেকে পাওয়া টোকেন
 const IPRN_EMAIL = 'mirajislam321711@gmail.com';         // ওয়েবসাইটের লগইন ইমেইল
