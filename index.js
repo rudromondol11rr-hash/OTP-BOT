@@ -2,16 +2,13 @@ const { Telegraf, Markup } = require('telegraf');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 
-// ==========================================
-// কনফিগারেশন: এখানে আপনার আসল তথ্যগুলো বসা
-// ==========================================
-const BOT_TOKEN = '9100726768:AAFIPksNHSbJw6PluOebpFN3nJpUOruUKJA';   // BotFather থেকে পাওয়া টোকেন
-const IPRN_EMAIL = 'mirajislam321711@gmail.com';         // ওয়েবসাইটের লগইন ইমেইল
-const IPRN_PASSWORD = 'Miraj3217@@';   // ওয়েবসাইটের পাসওয়ার্ড
-const GROUP_ID = '-1003930981242';                 // আপনার গ্রুপের আইডি
+const BOT_TOKEN = '9100726768:AAFIPksNHSbJw6PluOebpFN3nJpUOruUKJA';
+const IPRN_EMAIL = 'mirajislam321711@gmail.com';
+const IPRN_PASSWORD = 'miraj@#26';
+const GROUP_ID = '-1003930981242';
 
-const SMS_RECORDS_URL = 'https://iprn.pro/sms/?page=0'; // এসএমএস রেকর্ড পেজ লিংক[cite: 2]
-const STATS_FILE = './sms_stats.json'; // Today's ও Lifetime SMS হিসাব রাখার ফাইল
+const SMS_RECORDS_URL = 'https://iprn.pro/sms/?page=0';
+const STATS_FILE = './sms_stats.json';
 
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -20,13 +17,12 @@ let sharedPage = null;
 let isPollingActive = false;
 let lastRefreshClickTime = 0;
 let lastSeenRecordSignature = null;
+let isBotInitialized = false; // লগইন কনফার্মেশন একবারই পাঠানোর জন্য
 
-// সাধারণ মেসেজের নিচের বাটন
 const refreshOnlyButton = Markup.inlineKeyboard([
   [Markup.button.callback('🔄 Refresh', 'REFRESH_SMS')]
 ]);
 
-// "কোনো তথ্য পাওয়া যায়নি" মেসেজের নিচের বাটন (Refresh + Delete)
 const notFoundButtons = Markup.inlineKeyboard([
   [Markup.button.callback('🔄 Refresh', 'REFRESH_SMS')],
   [Markup.button.callback('🗑️ Delete', 'DELETE_MSG')]
@@ -34,7 +30,6 @@ const notFoundButtons = Markup.inlineKeyboard([
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// নাম্বারের প্রথম ২টি ও শেষের ৪টি সংখ্যা রেখে মাঝের সংখ্যা স্টার (*) করার ফাংশন
 function maskPhoneNumber(rawNumber) {
   if (!rawNumber || rawNumber === 'N/A') return '+Unknown';
   const digits = rawNumber.replace(/\D/g, '');
@@ -45,7 +40,6 @@ function maskPhoneNumber(rawNumber) {
   return `+${firstTwo}${stars}${lastFour}`;
 }
 
-// দেশের নাম, পতাকা ও সার্ভিস শনাক্ত করার ফাংশন
 function detectCountryAndService(rowText, digits) {
   let country = 'China 🇨🇳';
   if (digits.startsWith('86') || /china/i.test(rowText)) country = 'China 🇨🇳';
@@ -64,7 +58,6 @@ function detectCountryAndService(rowText, digits) {
   return { country, service };
 }
 
-// Today's SMS এবং Lifetime SMS আপডেট করার ফাংশন
 function updateSmsStats() {
   const todayStr = new Date().toISOString().split('T')[0];
   let stats = { date: todayStr, todayCount: 0, lifetimeCount: 0 };
@@ -89,7 +82,6 @@ function updateSmsStats() {
   return stats;
 }
 
-// ব্রাউজার এবং শেয়ার্ড পেজ চালু রাখার ফাংশন
 async function getReadyPage() {
   if (!browserInstance || !browserInstance.connected) {
     browserInstance = await puppeteer.launch({
@@ -101,6 +93,7 @@ async function getReadyPage() {
       ]
     });
     sharedPage = null;
+    isBotInitialized = false; // নতুন ব্রাউজার হলে ফ্ল্যাগ রিসেট
   }
 
   if (!sharedPage || sharedPage.isClosed()) {
@@ -108,17 +101,23 @@ async function getReadyPage() {
     await sharedPage.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
-    await sharedPage.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
   }
 
   return sharedPage;
 }
 
-// লগইন চেক ও ওয়েবসাইট রিফ্রেশ করে সর্বশেষ ডাটা আনার ফাংশন
 async function refreshAndScrape() {
   const page = await getReadyPage();
 
-  // লগআউট হয়ে গেলে অটোমেটিক লগইন করবে
+  // পেজ লোড হওয়ার পর URL চেক করা
+  const currentUrl = page.url();
+  
+  // যদি পেজে না গিয়ে থাকি অথবা লগইন পেজে থাকি
+  if (!currentUrl || currentUrl.includes('/login') || !currentUrl.includes('/sms')) {
+    await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+  }
+
+  // লগইন চেক
   const isLoginPage = await page.$('input[type="password"]');
   if (isLoginPage || page.url().includes('/login')) {
     await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 15000 });
@@ -131,12 +130,34 @@ async function refreshAndScrape() {
       page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
     ]);
 
-    if (!page.url().includes('/sms')) {
-      await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // সফলভাবে লগইন ও ড্যাশবোর্ডে পৌঁছানোর পর কনফার্মেশন পাঠানো
+    if (!isBotInitialized && page.url().includes('/sms')) {
+      isBotInitialized = true;
+      try {
+        await bot.telegram.sendMessage(
+          GROUP_ID,
+          '✅ *সিস্টেম রেডি:* ওয়েবসাইট সফলভাবে লগইন হয়েছে এবং এসএমএস রেকর্ড পেজে যুক্ত হওয়া হয়েছে।'
+        );
+      } catch (e) {
+        console.error('Failed to send init message:', e);
+      }
     }
   } else {
     // প্রতি ক্লিকে ওয়েবসাইট রিফ্রেশ করবে
     await page.reload({ waitUntil: 'networkidle2', timeout: 25000 });
+    
+    // ব্রাউজার রিস্টার্ট না হয়ে সেশন বজায় থাকলে এবং প্রথমবার হলে নিশ্চিত করা
+    if (!isBotInitialized && page.url().includes('/sms')) {
+      isBotInitialized = true;
+      try {
+        await bot.telegram.sendMessage(
+          GROUP_ID,
+          '✅ *সিস্টেম রেডি:* সেশন সক্রিয় আছে এবং এসএমএস রেকর্ড মনিটর করা হচ্ছে।'
+        );
+      } catch (e) {}
+    }
   }
 
   await sleep(1500);
@@ -151,7 +172,6 @@ async function refreshAndScrape() {
 
     if (cells.length < 2) return null;
 
-    // ডান পাশের কলাম Message এবং তার আগের কলাম B number[cite: 2]
     const message = cells[cells.length - 1] || 'N/A';
     const bNumber = cells[cells.length - 2] || 'N/A';
     const fullRowText = cells.join(' ');
@@ -166,18 +186,14 @@ async function refreshAndScrape() {
   });
 }
 
-// মেসেজ ২.৫ মিনিট (১৫০ সেকেন্ড) পর অটো ডিলিট করার ফাংশন
 function scheduleAutoDelete(chatId, messageId, delayMs = 150000) {
   setTimeout(async () => {
     try {
       await bot.telegram.deleteMessage(chatId, messageId);
-    } catch (e) {
-      // ইউজার আগেই ডিলিট করে ফেললে কোনো এরর দেবে না
-    }
+    } catch (e) {}
   }, delayMs);
 }
 
-// গ্রুপে বট অ্যাক্টিভ করার কমান্ড
 bot.command('start', async (ctx) => {
   if (String(ctx.chat.id) !== GROUP_ID) return;
   await ctx.reply(
@@ -186,7 +202,6 @@ bot.command('start', async (ctx) => {
   );
 });
 
-// Delete বাটনে ক্লিক করলে মেসেজ ডিলিট হবে
 bot.action('DELETE_MSG', async (ctx) => {
   if (String(ctx.chat.id) !== GROUP_ID) return;
   try {
@@ -197,17 +212,14 @@ bot.action('DELETE_MSG', async (ctx) => {
   }
 });
 
-// Refresh বাটনে ক্লিক করলে যা ঘটবে
 bot.action('REFRESH_SMS', async (ctx) => {
   if (String(ctx.chat.id) !== GROUP_ID) {
     return ctx.answerCbQuery('অনুমোদিত গ্রুপ নয়।', { show_alert: true });
   }
 
-  // প্রতি ক্লিকেই রিকোয়েস্ট নেবে এবং ১ মিনিটের টাইমার রিসেট করবে
   lastRefreshClickTime = Date.now();
   await ctx.answerCbQuery('🔄 রিফ্রেশ রিকোয়েস্ট গ্রহণ করা হয়েছে...');
 
-  // যদি ইতিমধ্যে ব্যাকগ্রাউন্ডে চেক চলতে থাকে, তবে আলাদা মেসেজ না পাঠিয়ে ওয়েবসাইট রিফ্রেশ ট্রিগার করবে
   if (isPollingActive) {
     return;
   }
@@ -215,7 +227,6 @@ bot.action('REFRESH_SMS', async (ctx) => {
   isPollingActive = true;
 
   try {
-    // সর্বশেষ ক্লিকের পর থেকে পুরো ১ মিনিট (৬০০০০ ms) পর্যন্ত চেক করতে থাকবে
     while (Date.now() - lastRefreshClickTime < 60000) {
       const record = await refreshAndScrape();
 
@@ -246,27 +257,23 @@ bot.action('REFRESH_SMS', async (ctx) => {
           ...refreshOnlyButton
         });
 
-        // ডাটা পাওয়া গেলে লুপ শেষ করবে
         return;
       }
 
-      // পরের রিফ্রেশের আগে ৩ সেকেন্ড অপেক্ষা করবে (যদি ১ মিনিট পূর্ণ না হয়ে থাকে)
       if (Date.now() - lastRefreshClickTime < 60000) {
         await sleep(3000);
       }
     }
 
-    // পুরো ১ মিনিট চেক করার পরও কোনো নতুন ডাটা না পাওয়া গেলে এই মেসেজ দেবে
     const notFoundMsg = await bot.telegram.sendMessage(
       GROUP_ID,
-      '⚠️ *কোনো তথ্য পাওয়া যায়নি।*\nআবার চেষ্টা করতে নিচের Refresh বাটনে ক্লিক করুন।',
+      '⚠️ *কোনো তথ্য পাওয়া যায়নি।*\nআবার চেষ্টা করতে নিচের Refresh বাটনে ক্লিক করুন.',
       {
         parse_mode: 'Markdown',
         ...notFoundButtons
       }
     );
 
-    // ২.৫ মিনিট (২ থেকে ৩ মিনিটের মধ্যে) পর মেসেজটি অটোমেটিক ডিলিট হয়ে যাবে
     scheduleAutoDelete(GROUP_ID, notFoundMsg.message_id, 150000);
 
   } catch (error) {
