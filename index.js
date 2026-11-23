@@ -2,6 +2,9 @@ const { Telegraf, Markup } = require('telegraf');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 
+// ==========================================
+// কনফিগারেশন (নিরাপত্তার স্বার্থে টোকেন পরিবর্তন করে নেওয়া ভালো)
+// ==========================================
 const BOT_TOKEN = '9100726768:AAFIPksNHSbJw6PluOebpFN3nJpUOruUKJA';
 const IPRN_EMAIL = 'mirajislam321711@gmail.com';
 const IPRN_PASSWORD = 'miraj@#26';
@@ -17,7 +20,7 @@ let sharedPage = null;
 let isPollingActive = false;
 let lastRefreshClickTime = 0;
 let lastSeenRecordSignature = null;
-let isBotInitialized = false; // লগইন কনফার্মেশন একবারই পাঠানোর জন্য
+let isBotInitialized = false;
 
 const refreshOnlyButton = Markup.inlineKeyboard([
   [Markup.button.callback('🔄 Refresh', 'REFRESH_SMS')]
@@ -29,6 +32,11 @@ const notFoundButtons = Markup.inlineKeyboard([
 ]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// গ্লোবাল এরর হ্যান্ডলার (যাতে বট কখনো ক্র্যাশ না করে)
+bot.catch((err) => {
+  console.error('Bot Global Error:', err.message);
+});
 
 function maskPhoneNumber(rawNumber) {
   if (!rawNumber || rawNumber === 'N/A') return '+Unknown';
@@ -89,11 +97,12 @@ async function getReadyPage() {
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
       ]
     });
     sharedPage = null;
-    isBotInitialized = false; // নতুন ব্রাউজার হলে ফ্ল্যাগ রিসেট
+    isBotInitialized = false;
   }
 
   if (!sharedPage || sharedPage.isClosed()) {
@@ -106,60 +115,62 @@ async function getReadyPage() {
   return sharedPage;
 }
 
-async function refreshAndScrape() {
+// লগইন নিশ্চিত করার আলাদা ফাংশন
+async function ensureLoggedIn() {
   const page = await getReadyPage();
-
-  // পেজ লোড হওয়ার পর URL চেক করা
   const currentUrl = page.url();
-  
-  // যদি পেজে না গিয়ে থাকি অথবা লগইন পেজে থাকি
-  if (!currentUrl || currentUrl.includes('/login') || !currentUrl.includes('/sms')) {
-    await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+
+  if (!currentUrl || currentUrl === 'about:blank' || currentUrl.includes('/login') || !currentUrl.includes('/sms')) {
+    await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 35000 });
   }
 
-  // লগইন চেক
   const isLoginPage = await page.$('input[type="password"]');
   if (isLoginPage || page.url().includes('/login')) {
+    console.log('Login page detected. Attempting auto-login...');
     await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 15000 });
+    
     const emailInput = await page.$('input[type="email"], input[name="email"], input[type="text"]');
+    await emailInput.click({ clickCount: 3 });
     await emailInput.type(IPRN_EMAIL, { delay: 20 });
-    await page.type('input[type="password"]', IPRN_PASSWORD, { delay: 20 });
+
+    const passInput = await page.$('input[type="password"]');
+    await passInput.click({ clickCount: 3 });
+    await passInput.type(IPRN_PASSWORD, { delay: 20 });
 
     await Promise.all([
       page.click('button[type="submit"], input[type="submit"]'),
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 35000 }).catch(() => {})
     ]);
 
-    await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-    
-    // সফলভাবে লগইন ও ড্যাশবোর্ডে পৌঁছানোর পর কনফার্মেশন পাঠানো
-    if (!isBotInitialized && page.url().includes('/sms')) {
-      isBotInitialized = true;
-      try {
-        await bot.telegram.sendMessage(
-          GROUP_ID,
-          '✅ *সিস্টেম রেডি:* ওয়েবসাইট সফলভাবে লগইন হয়েছে এবং এসএমএস রেকর্ড পেজে যুক্ত হওয়া হয়েছে।'
-        );
-      } catch (e) {
-        console.error('Failed to send init message:', e);
-      }
+    await sleep(2000);
+
+    // লগইন শেষে যদি এখনো লগইন পেজেই থাকে তবে এরর থ্রো করবে
+    if (page.url().includes('/login') || await page.$('input[type="password"]')) {
+      throw new Error('লগইন ব্যর্থ হয়েছে! ইমেইল, পাসওয়ার্ড বা ক্যাপচা চেক করুন।');
     }
-  } else {
-    // প্রতি ক্লিকে ওয়েবসাইট রিফ্রেশ করবে
-    await page.reload({ waitUntil: 'networkidle2', timeout: 25000 });
-    
-    // ব্রাউজার রিস্টার্ট না হয়ে সেশন বজায় থাকলে এবং প্রথমবার হলে নিশ্চিত করা
-    if (!isBotInitialized && page.url().includes('/sms')) {
-      isBotInitialized = true;
-      try {
-        await bot.telegram.sendMessage(
-          GROUP_ID,
-          '✅ *সিস্টেম রেডি:* সেশন সক্রিয় আছে এবং এসএমএস রেকর্ড মনিটর করা হচ্ছে।'
-        );
-      } catch (e) {}
+
+    if (!page.url().includes('/sms')) {
+      await page.goto(SMS_RECORDS_URL, { waitUntil: 'networkidle2', timeout: 35000 });
     }
   }
 
+  // সফলভাবে SMS পেজে পৌঁছালে গ্রুপে মেসেজ পাঠাবে
+  if (!isBotInitialized && page.url().includes('/sms')) {
+    isBotInitialized = true;
+    console.log('Successfully reached SMS Records page!');
+    await bot.telegram.sendMessage(
+      GROUP_ID,
+      '✅ *সিস্টেম রেডি:* ওয়েবসাইটে সফলভাবে লগইন হয়েছে এবং এসএমএস রেকর্ড পেজে যুক্ত হওয়া হয়েছে।',
+      { parse_mode: 'Markdown', ...refreshOnlyButton }
+    ).catch((e) => console.error('Init msg error:', e.message));
+  }
+
+  return page;
+}
+
+async function refreshAndScrape() {
+  const page = await ensureLoggedIn();
+  await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
   await sleep(1500);
 
   return await page.evaluate(() => {
@@ -197,28 +208,32 @@ function scheduleAutoDelete(chatId, messageId, delayMs = 150000) {
 bot.command('start', async (ctx) => {
   if (String(ctx.chat.id) !== GROUP_ID) return;
   await ctx.reply(
-    '✅ *OTP রিসিভার বট সক্রিয় হয়েছে!*\nনতুন কোড চেক করতে নিচের বাটনে ক্লিক করুন।',
-    { parse_mode: 'Markdown', ...refreshOnlyButton }
+    '⏳ *ওয়েবসাইটে লগইন ও কানেক্ট করা হচ্ছে...* অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করুন।',
+    { parse_mode: 'Markdown' }
   );
+
+  try {
+    await ensureLoggedIn();
+  } catch (err) {
+    await ctx.reply(`❌ *লগইন সমস্যা:* ${err.message}`, { parse_mode: 'Markdown' });
+  }
 });
 
 bot.action('DELETE_MSG', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
   if (String(ctx.chat.id) !== GROUP_ID) return;
   try {
     await ctx.deleteMessage();
-    await ctx.answerCbQuery('🗑️ মেসেজ ডিলিট করা হয়েছে।');
-  } catch (e) {
-    await ctx.answerCbQuery('মেসেজটি ইতিমধ্যে ডিলিট হয়ে গেছে।');
-  }
+  } catch (e) {}
 });
 
 bot.action('REFRESH_SMS', async (ctx) => {
-  if (String(ctx.chat.id) !== GROUP_ID) {
-    return ctx.answerCbQuery('অনুমোদিত গ্রুপ নয়।', { show_alert: true });
-  }
+  // পুরনো বাটন ক্লিকের এরর এড়াতে সবার আগে answerCbQuery কল করা হলো
+  await ctx.answerCbQuery('🔄 রিফ্রেশ রিকোয়েস্ট গ্রহণ করা হয়েছে...').catch(() => {});
+
+  if (String(ctx.chat.id) !== GROUP_ID) return;
 
   lastRefreshClickTime = Date.now();
-  await ctx.answerCbQuery('🔄 রিফ্রেশ রিকোয়েস্ট গ্রহণ করা হয়েছে...');
 
   if (isPollingActive) {
     return;
@@ -267,7 +282,7 @@ bot.action('REFRESH_SMS', async (ctx) => {
 
     const notFoundMsg = await bot.telegram.sendMessage(
       GROUP_ID,
-      '⚠️ *কোনো তথ্য পাওয়া যায়নি।*\nআবার চেষ্টা করতে নিচের Refresh বাটনে ক্লিক করুন.',
+      '⚠️ *কোনো তথ্য পাওয়া যায়নি।*\nআবার চেষ্টা করতে নিচের Refresh বাটনে ক্লিক করুন।',
       {
         parse_mode: 'Markdown',
         ...notFoundButtons
@@ -291,8 +306,19 @@ bot.action('REFRESH_SMS', async (ctx) => {
   }
 });
 
-bot.launch().then(() => {
+// বট চালু হওয়ার সাথে সাথেই অটোমেটিক ওয়েবসাইটে লগইন শুরু করবে
+bot.launch().then(async () => {
   console.log('Bot is running for group:', GROUP_ID);
+  try {
+    await ensureLoggedIn();
+  } catch (err) {
+    console.error('Startup Login Error:', err.message);
+    await bot.telegram.sendMessage(
+      GROUP_ID,
+      `❌ *স্টার্টআপ লগইন ব্যর্থ হয়েছে:* ${err.message}`,
+      { parse_mode: 'Markdown' }
+    ).catch(() => {});
+  }
 });
 
 process.once('SIGINT', async () => {
